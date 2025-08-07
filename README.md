@@ -291,9 +291,9 @@ cers-coder create --template data-pipeline --name "我的数据管道"
 
 ## 📞 联系我们
 
-- 项目主页: https://github.com/your-org/cers-coder
-- 问题反馈: https://github.com/your-org/cers-coder/issues
-- 讨论区: https://github.com/your-org/cers-coder/discussions
+- 项目主页: https://www.cers-ai.cn/cers-coder
+- 问题反馈: https://github.com/cers-ai/cers-coder/issues
+- 讨论区: https://github.com/cers-ai/cers-coder/discussions
 
 ---
 
