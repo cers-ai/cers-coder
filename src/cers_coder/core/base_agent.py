@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from .message import Message, MessageType, create_error_message
+from .operation_recorder import OperationRecorder, OperationType
 
 
 class AgentStatus(str, Enum):
@@ -49,23 +50,26 @@ class AgentConfig(BaseModel):
 
 class BaseAgent(ABC):
     """智能体基类"""
-    
-    def __init__(self, config: AgentConfig):
+
+    def __init__(self, config: AgentConfig, operation_recorder: Optional[OperationRecorder] = None):
         self.id = str(uuid4())
         self.config = config
         self.status = AgentStatus.IDLE
         self.logger = logging.getLogger(f"agent.{config.name}")
-        
+
+        # 操作记录器
+        self.operation_recorder = operation_recorder
+
         # 消息队列
         self._message_queue: asyncio.Queue[Message] = asyncio.Queue()
         self._running_tasks: Set[str] = set()
-        
+
         # 状态信息
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
         self.task_count = 0
         self.error_count = 0
-        
+
         # 事件循环
         self._stop_event = asyncio.Event()
         self._message_handler_task: Optional[asyncio.Task] = None
@@ -93,10 +97,20 @@ class BaseAgent(ABC):
         self.logger.info(f"启动智能体: {self.name}")
         self.status = AgentStatus.IDLE
         self._stop_event.clear()
-        
+
+        # 记录启动操作
+        if self.operation_recorder:
+            await self.operation_recorder.record_instant_operation(
+                operation_type=OperationType.AGENT_START,
+                actor=self.name,
+                title=f"启动智能体: {self.name}",
+                description=f"智能体 {self.name} 开始运行",
+                tags=["agent", "lifecycle"]
+            )
+
         # 启动消息处理任务
         self._message_handler_task = asyncio.create_task(self._message_handler())
-        
+
         # 执行初始化
         await self._initialize()
 
@@ -105,7 +119,22 @@ class BaseAgent(ABC):
         self.logger.info(f"停止智能体: {self.name}")
         self.status = AgentStatus.STOPPED
         self._stop_event.set()
-        
+
+        # 记录停止操作
+        if self.operation_recorder:
+            await self.operation_recorder.record_instant_operation(
+                operation_type=OperationType.AGENT_STOP,
+                actor=self.name,
+                title=f"停止智能体: {self.name}",
+                description=f"智能体 {self.name} 停止运行",
+                output_data={
+                    "task_count": self.task_count,
+                    "error_count": self.error_count,
+                    "uptime": (datetime.now() - self.created_at).total_seconds()
+                },
+                tags=["agent", "lifecycle"]
+            )
+
         # 停止消息处理任务
         if self._message_handler_task:
             self._message_handler_task.cancel()
@@ -113,7 +142,7 @@ class BaseAgent(ABC):
                 await self._message_handler_task
             except asyncio.CancelledError:
                 pass
-        
+
         # 执行清理
         await self._cleanup()
 
@@ -123,24 +152,60 @@ class BaseAgent(ABC):
 
     async def process_message(self, message: Message) -> Optional[Message]:
         """处理消息 - 子类需要实现"""
+        # 开始记录消息处理操作
+        operation_id = await self._start_operation(
+            operation_type=OperationType.AGENT_PROCESS,
+            title=f"处理消息: {message.subject}",
+            description=f"处理来自 {message.sender} 的 {message.type.value} 消息",
+            input_data={
+                "message_id": str(message.id),
+                "message_type": message.type.value,
+                "sender": message.sender,
+                "subject": message.subject
+            },
+            tags=["message_processing"]
+        )
+
         try:
             self.last_activity = datetime.now()
-            
+
             # 根据消息类型分发处理
             if message.type == MessageType.TASK_CREATE:
-                return await self._handle_task_create(message)
+                response = await self._handle_task_create(message)
             elif message.type == MessageType.TASK_UPDATE:
-                return await self._handle_task_update(message)
+                response = await self._handle_task_update(message)
             elif message.type == MessageType.AGENT_REQUEST:
-                return await self._handle_agent_request(message)
+                response = await self._handle_agent_request(message)
             elif message.type == MessageType.DATA_INPUT:
-                return await self._handle_data_input(message)
+                response = await self._handle_data_input(message)
             else:
-                return await self._handle_custom_message(message)
-                
+                response = await self._handle_custom_message(message)
+
+            # 完成操作记录
+            if operation_id:
+                await self._complete_operation(
+                    operation_id=operation_id,
+                    success=True,
+                    output_data={
+                        "response_generated": response is not None,
+                        "response_subject": response.subject if response else None
+                    }
+                )
+
+            return response
+
         except Exception as e:
             self.error_count += 1
             self.logger.error(f"处理消息失败: {e}", exc_info=True)
+
+            # 完成操作记录（失败）
+            if operation_id:
+                await self._complete_operation(
+                    operation_id=operation_id,
+                    success=False,
+                    error_message=str(e)
+                )
+
             return create_error_message(
                 sender=self.name,
                 error_code="MESSAGE_PROCESSING_ERROR",
@@ -232,3 +297,69 @@ class BaseAgent(ABC):
 
     def __repr__(self) -> str:
         return f"BaseAgent(id={self.id}, name={self.name}, status={self.status.value})"
+
+    async def _record_operation(
+        self,
+        operation_type: OperationType,
+        title: str,
+        description: str = "",
+        input_data: Optional[Dict[str, Any]] = None,
+        output_data: Optional[Dict[str, Any]] = None,
+        success: bool = True,
+        error_message: Optional[str] = None,
+        tags: Optional[List[str]] = None
+    ) -> Optional[str]:
+        """记录操作"""
+        if not self.operation_recorder:
+            return None
+
+        return await self.operation_recorder.record_instant_operation(
+            operation_type=operation_type,
+            actor=self.name,
+            title=title,
+            description=description,
+            input_data=input_data or {},
+            output_data=output_data or {},
+            success=success,
+            error_message=error_message,
+            tags=(tags or []) + ["agent", self.name.lower().replace(" ", "_")]
+        )
+
+    async def _start_operation(
+        self,
+        operation_type: OperationType,
+        title: str,
+        description: str = "",
+        input_data: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None
+    ) -> Optional[str]:
+        """开始记录长时间操作"""
+        if not self.operation_recorder:
+            return None
+
+        return await self.operation_recorder.start_operation(
+            operation_type=operation_type,
+            actor=self.name,
+            title=title,
+            description=description,
+            input_data=input_data or {},
+            tags=(tags or []) + ["agent", self.name.lower().replace(" ", "_")]
+        )
+
+    async def _complete_operation(
+        self,
+        operation_id: str,
+        success: bool = True,
+        output_data: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None
+    ) -> None:
+        """完成操作记录"""
+        if not self.operation_recorder:
+            return
+
+        await self.operation_recorder.complete_operation(
+            operation_id=operation_id,
+            success=success,
+            output_data=output_data,
+            error_message=error_message
+        )

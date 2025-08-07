@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from ..core.base_agent import AgentCapability, AgentConfig, BaseAgent
 from ..core.message import Message, MessageType
+from ..core.operation_recorder import OperationRecorder, OperationType
 from ..llm.ollama_client import OllamaClient
 
 
@@ -64,8 +65,8 @@ class RequirementAnalysisResult(BaseModel):
 
 class RequirementAgent(BaseAgent):
     """需求分析智能体"""
-    
-    def __init__(self, ollama_client: OllamaClient):
+
+    def __init__(self, ollama_client: OllamaClient, operation_recorder: Optional[OperationRecorder] = None):
         config = AgentConfig(
             name="需求分析智能体",
             description="负责结构化提取业务需求，生成功能模型和用例",
@@ -78,8 +79,8 @@ class RequirementAgent(BaseAgent):
                 "max_tokens": 4000
             }
         )
-        super().__init__(config)
-        
+        super().__init__(config, operation_recorder)
+
         self.ollama_client = ollama_client
         self.analysis_result: Optional[RequirementAnalysisResult] = None
 

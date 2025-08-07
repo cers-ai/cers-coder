@@ -10,14 +10,16 @@ from typing import Any, Dict, List, Optional
 from ..core.base_agent import AgentCapability, AgentConfig, BaseAgent
 from ..core.file_parser import FileParser, ProjectRequirements
 from ..core.message import Message, MessageType, create_task_message
+from ..core.operation_recorder import OperationRecorder, OperationType
 from ..core.state_manager import StateManager
 from ..core.workflow import TaskDefinition, WorkflowController, WorkflowPhase
 
 
 class PMAgent(BaseAgent):
     """项目管理智能体"""
-    
-    def __init__(self, state_manager: StateManager, workflow_controller: WorkflowController):
+
+    def __init__(self, state_manager: StateManager, workflow_controller: WorkflowController,
+                 operation_recorder: Optional[OperationRecorder] = None):
         config = AgentConfig(
             name="PM智能体",
             description="项目管理智能体，负责任务分解、进度控制和智能体协调",
@@ -25,12 +27,12 @@ class PMAgent(BaseAgent):
             max_concurrent_tasks=5,
             timeout=600
         )
-        super().__init__(config)
-        
+        super().__init__(config, operation_recorder)
+
         self.state_manager = state_manager
         self.workflow_controller = workflow_controller
         self.file_parser = FileParser()
-        
+
         # PM状态
         self.project_requirements: Optional[ProjectRequirements] = None
         self.current_phase = WorkflowPhase.INITIALIZATION
