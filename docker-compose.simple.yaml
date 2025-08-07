@@ -1,0 +1,55 @@
+version: '3.8'
+
+# 简化版docker-compose，只包含核心服务
+services:
+  # Ollama服务
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cers-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    networks:
+      - cers-network
+
+  # CERS Coder主服务
+  cers-coder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cers-coder-app
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    volumes:
+      # 挂载当前目录作为工作目录
+      - .:/app/workspace
+      # 挂载输出目录
+      - ./out:/app/out
+      - ./state:/app/state
+      - ./logs:/app/logs
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - WORK_DIR=/app/workspace
+      - OUTPUT_DIR=/app/out
+      - STATE_DIR=/app/state
+      - LOG_DIR=/app/logs
+      - LOG_LEVEL=INFO
+    networks:
+      - cers-network
+    # 交互式终端
+    stdin_open: true
+    tty: true
+    # 等待用户输入命令
+    command: ["bash"]
+
+networks:
+  cers-network:
+    driver: bridge
+
+volumes:
+  ollama_data:

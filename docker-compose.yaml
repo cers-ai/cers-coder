@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  # Ollama服务
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cers-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    networks:
+      - cers-network
+    # GPU支持（如果有NVIDIA GPU）
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # CERS Coder主服务
+  cers-coder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cers-coder-app
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    volumes:
+      # 挂载工作目录
+      - ./workspace:/app/workspace
+      - ./out:/app/out
+      - ./state:/app/state
+      - ./memory:/app/memory
+      - ./logs:/app/logs
+      # 挂载配置文件
+      - ./.env:/app/.env:ro
+      # 挂载输入文件
+      - ./0.request.md:/app/0.request.md:ro
+      - ./1.rule.md:/app/1.rule.md:ro
+      - ./2.mcp.md:/app/2.mcp.md:ro
+      - ./3.assets.md:/app/3.assets.md:ro
+      - ./4.env.md:/app/4.env.md:ro
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - WORK_DIR=/app/workspace
+      - OUTPUT_DIR=/app/out
+      - STATE_DIR=/app/state
+      - MEMORY_DIR=/app/memory
+      - LOG_DIR=/app/logs
+      - LOG_LEVEL=INFO
+      - DEBUG=false
+    networks:
+      - cers-network
+    # 如果需要交互式终端
+    stdin_open: true
+    tty: true
+    # 默认命令
+    command: ["cers-coder", "start"]
+
+  # 可选：Redis用于缓存和消息队列
+  redis:
+    image: redis:7-alpine
+    container_name: cers-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - cers-network
+    command: redis-server --appendonly yes
+
+  # 可选：PostgreSQL用于持久化存储
+  postgres:
+    image: postgres:15-alpine
+    container_name: cers-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=cers_coder
+      - POSTGRES_USER=cers
+      - POSTGRES_PASSWORD=cers_password
+    networks:
+      - cers-network
+
+  # 可选：监控服务
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cers-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - cers-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+
+  # 可选：Grafana仪表板
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cers-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - cers-network
+    depends_on:
+      - prometheus
+
+networks:
+  cers-network:
+    driver: bridge
+    name: cers-network
+
+volumes:
+  ollama_data:
+    name: cers-ollama-data
+  redis_data:
+    name: cers-redis-data
+  postgres_data:
+    name: cers-postgres-data
+  prometheus_data:
+    name: cers-prometheus-data
+  grafana_data:
+    name: cers-grafana-data
