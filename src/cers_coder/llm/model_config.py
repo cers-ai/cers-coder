@@ -357,3 +357,117 @@ class ModelConfigManager:
                     recommendations["resource_efficient"].append(model_name)
         
         return recommendations
+
+    async def validate_model_availability(self, model_name: str, ollama_client=None) -> tuple[bool, list[str], str]:
+        """验证模型是否可用
+
+        Returns:
+            tuple: (是否可用, 可用模型列表, 错误信息或建议)
+        """
+        if not ollama_client:
+            return False, [], "Ollama客户端不可用，无法验证模型"
+
+        try:
+            models = await ollama_client.list_models()
+            available_models = [model.name for model in models]
+
+            if model_name in available_models:
+                return True, available_models, f"模型 {model_name} 可用"
+            else:
+                # 提供智能建议
+                suggestions = self._suggest_similar_models(model_name, available_models)
+                suggestion_text = f"模型 '{model_name}' 不存在。"
+
+                if suggestions:
+                    suggestion_text += f" 建议使用: {', '.join(suggestions[:3])}"
+                elif available_models:
+                    suggestion_text += f" 可用模型: {', '.join(available_models[:5])}"
+                    if len(available_models) > 5:
+                        suggestion_text += f" 等共{len(available_models)}个模型"
+                else:
+                    suggestion_text += " 没有找到任何可用模型，请先下载模型"
+
+                return False, available_models, suggestion_text
+
+        except Exception as e:
+            self.logger.error(f"验证模型可用性失败: {e}")
+            return False, [], f"检查模型失败: {e}"
+
+    def _suggest_similar_models(self, target_model: str, available_models: list[str]) -> list[str]:
+        """根据目标模型名称推荐相似的模型"""
+        suggestions = []
+        target_lower = target_model.lower()
+
+        # 精确匹配（忽略版本号）
+        base_name = target_lower.split(':')[0]
+        for model in available_models:
+            if model.lower().startswith(base_name):
+                suggestions.append(model)
+
+        # 如果没有精确匹配，寻找包含关键词的模型
+        if not suggestions:
+            keywords = ['llama', 'qwen', 'gemma', 'phi', 'mistral', 'codellama']
+            for keyword in keywords:
+                if keyword in target_lower:
+                    for model in available_models:
+                        if keyword in model.lower():
+                            suggestions.append(model)
+                    break
+
+        # 如果还是没有，推荐常用模型
+        if not suggestions:
+            common_models = ['llama3:8b', 'qwen2:7b', 'gemma2:9b', 'phi3:mini']
+            for model in common_models:
+                if model in available_models:
+                    suggestions.append(model)
+
+        return list(dict.fromkeys(suggestions))  # 去重并保持顺序
+
+    async def check_and_suggest_models(self, ollama_client=None) -> dict:
+        """检查所有配置的模型并提供建议"""
+        if not ollama_client:
+            return {
+                "status": "error",
+                "message": "Ollama客户端不可用",
+                "available_models": [],
+                "missing_models": [],
+                "suggestions": {}
+            }
+
+        try:
+            models = await ollama_client.list_models()
+            available_models = [model.name for model in models]
+
+            configured_models = set()
+            for mapping in self.agent_mappings.values():
+                configured_models.add(mapping.primary_model)
+                configured_models.update(mapping.fallback_models)
+
+            missing_models = []
+            suggestions = {}
+
+            for model in configured_models:
+                if model not in available_models:
+                    missing_models.append(model)
+                    similar = self._suggest_similar_models(model, available_models)
+                    if similar:
+                        suggestions[model] = similar[:3]
+
+            return {
+                "status": "success",
+                "available_models": available_models,
+                "missing_models": missing_models,
+                "suggestions": suggestions,
+                "total_configured": len(configured_models),
+                "total_available": len(available_models)
+            }
+
+        except Exception as e:
+            self.logger.error(f"检查模型失败: {e}")
+            return {
+                "status": "error",
+                "message": f"检查模型失败: {e}",
+                "available_models": [],
+                "missing_models": [],
+                "suggestions": {}
+            }

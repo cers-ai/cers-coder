@@ -149,18 +149,23 @@ class ServiceManager:
                 return True
                 
             elif service_name == "ollama_client":
-                from ..llm.ollama_client import OllamaClient
-                import os
-                client = OllamaClient(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
-                # 健康检查
-                if await client.health_check():
-                    self.service_instances[service_name] = client
-                    return True
-                else:
+                try:
+                    from ..llm.ollama_client import OllamaClient
+                    import os
+                    client = OllamaClient(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+                    # 健康检查
+                    if await client.health_check():
+                        self.service_instances[service_name] = client
+                        return True
+                    else:
+                        return False
+                except Exception as e:
+                    self.logger.error(f"Ollama客户端初始化失败: {e}")
                     return False
                     
             elif service_name == "model_config_manager":
                 from ..llm.model_config import ModelConfigManager
+                # 模型配置管理器可以独立于Ollama运行
                 self.service_instances[service_name] = ModelConfigManager()
                 return True
                 

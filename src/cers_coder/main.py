@@ -86,8 +86,8 @@ class CERSCoder:
 
         self.service_manager.register_service(
             "model_config_manager",
-            ServiceLevel.ENHANCED,
-            dependencies=["ollama_client"]
+            ServiceLevel.ENHANCED
+            # 移除ollama_client依赖，让它可以独立运行
         )
 
         self.service_manager.register_service(
@@ -102,6 +102,7 @@ class CERSCoder:
         state_manager = self.service_manager.get_service("state_manager")
         workflow_controller = self.service_manager.get_service("workflow_controller")
         ollama_client = self.service_manager.get_service("ollama_client")
+        model_config_manager = self.service_manager.get_service("model_config_manager")
 
         # 只有在相关服务可用时才初始化智能体
         if state_manager and workflow_controller:
@@ -109,12 +110,46 @@ class CERSCoder:
             pm_agent = PMAgent(state_manager, workflow_controller)
             workflow_controller.register_agent("pm_agent", pm_agent)
 
-            # 如果Ollama可用，初始化需求分析智能体
-            if ollama_client:
-                requirement_agent = RequirementAgent(ollama_client)
-                workflow_controller.register_agent("requirement_agent", requirement_agent)
+            # 如果Ollama可用，检查模型并初始化AI智能体
+            if ollama_client and model_config_manager:
+                try:
+                    # 检查模型状态
+                    model_status = await model_config_manager.check_and_suggest_models(ollama_client)
+
+                    if model_status["status"] == "success":
+                        if model_status["missing_models"]:
+                            self.console.print("⚠️  部分配置的模型不可用:", style="yellow")
+                            for model in model_status["missing_models"][:3]:
+                                self.console.print(f"  • {model}", style="yellow")
+                                # 显示建议
+                                if model in model_status["suggestions"]:
+                                    suggestions = model_status["suggestions"][model]
+                                    self.console.print(f"    💡 建议: {suggestions[0]}", style="cyan")
+
+                            if len(model_status["missing_models"]) > 3:
+                                self.console.print(f"  ... 还有 {len(model_status['missing_models']) - 3} 个模型缺失")
+
+                            self.console.print("💡 使用 'cers-coder models --check-missing --suggest' 查看详情")
+
+                        # 如果有可用模型，初始化需求分析智能体
+                        if model_status["available_models"]:
+                            requirement_agent = RequirementAgent(ollama_client)
+                            workflow_controller.register_agent("requirement_agent", requirement_agent)
+                            self.console.print(f"✅ AI智能体已初始化 (可用模型: {len(model_status['available_models'])}个)")
+                        else:
+                            self.console.print("⚠️  没有可用模型，跳过AI智能体初始化", style="yellow")
+                            self.console.print("💡 请先下载模型: ollama pull llama3:8b", style="cyan")
+                    else:
+                        self.console.print(f"⚠️  模型检查失败: {model_status['message']}", style="yellow")
+
+                except Exception as e:
+                    self.console.print(f"⚠️  模型检查异常: {e}", style="yellow")
+                    # 仍然尝试初始化，但不检查模型
+                    requirement_agent = RequirementAgent(ollama_client)
+                    workflow_controller.register_agent("requirement_agent", requirement_agent)
             else:
                 self.console.print("⚠️  Ollama不可用，跳过AI智能体初始化", style="yellow")
+                self.console.print("💡 启动Ollama: ollama serve", style="cyan")
 
     def get_workspace_manager(self) -> Optional[WorkspaceManager]:
         """获取工作空间管理器"""
@@ -460,27 +495,45 @@ def status(ctx):
                 if current_workspace:
                     console.print(f"当前工作空间: {current_workspace.name}")
 
-            # 获取Ollama信息
+            # 获取Ollama和模型信息
             ollama_client = app.get_ollama_client()
-            if ollama_client:
+            model_config_manager = app.service_manager.get_service("model_config_manager")
+
+            if ollama_client and model_config_manager:
                 try:
                     models = await ollama_client.list_models()
                     console.print(f"可用模型: {len(models)} 个")
+
+                    # 检查模型状态
+                    model_status = await model_config_manager.check_and_suggest_models(ollama_client)
+                    if model_status["status"] == "success" and model_status["missing_models"]:
+                        console.print(f"缺失模型: {len(model_status['missing_models'])} 个", style="yellow")
 
                     if models:
                         table = Table(title="📦 可用模型")
                         table.add_column("模型名称", style="cyan")
                         table.add_column("大小", style="yellow")
+                        table.add_column("状态", style="green")
 
                         for model in models[:5]:  # 只显示前5个
                             size_gb = model.size / (1024**3)
-                            table.add_row(model.name, f"{size_gb:.1f} GB")
+                            # 检查是否是配置的模型
+                            status = "✅ 已配置" if model.name in [m for mapping in model_config_manager.agent_mappings.values()
+                                                                for m in [mapping.primary_model] + mapping.fallback_models] else "📦 可用"
+                            table.add_row(model.name, f"{size_gb:.1f} GB", status)
 
                         console.print(table)
+
+                        if len(models) > 5:
+                            console.print(f"... 还有 {len(models) - 5} 个模型")
+
                 except Exception as e:
                     console.print(f"获取模型信息失败: {e}", style="red")
+            elif ollama_client:
+                console.print("模型配置管理器不可用", style="yellow")
             else:
                 console.print("Ollama服务不可用", style="yellow")
+                console.print("💡 启动命令: ollama serve", style="cyan")
 
             # 显示建议
             if health_info.get('recommendations'):
@@ -839,6 +892,81 @@ def diagnose(ctx):
                 app.console.print(f"  • 工作空间: 管理器不可用")
         else:
             app.console.print("❌ 系统初始化失败，无法进行诊断", style="red")
+
+    asyncio.run(run())
+
+
+@cli.command()
+@click.option('--check-missing', is_flag=True, help='检查缺失的模型')
+@click.option('--suggest', is_flag=True, help='提供模型建议')
+@click.pass_context
+def models(ctx, check_missing, suggest):
+    """模型管理和检查"""
+    app = ctx.obj['app']
+
+    async def run():
+        if await app.initialize():
+            ollama_client = app.get_ollama_client()
+            model_config_manager = app.service_manager.get_service("model_config_manager")
+
+            if not model_config_manager:
+                app.console.print("❌ 模型配置管理器不可用", style="red")
+                return
+
+            app.console.print(Panel.fit("🤖 模型状态检查", style="bold blue"))
+
+            if not ollama_client:
+                app.console.print("⚠️  Ollama服务不可用，无法检查模型状态", style="yellow")
+                app.console.print("\n💡 启动Ollama服务:")
+                app.console.print("   ollama serve")
+                return
+
+            # 检查模型状态
+            model_status = await model_config_manager.check_and_suggest_models(ollama_client)
+
+            if model_status["status"] == "error":
+                app.console.print(f"❌ {model_status['message']}", style="red")
+                return
+
+            # 显示基本信息
+            app.console.print(f"📊 模型统计:")
+            app.console.print(f"  • 已配置模型: {model_status['total_configured']} 个")
+            app.console.print(f"  • 可用模型: {model_status['total_available']} 个")
+            app.console.print(f"  • 缺失模型: {len(model_status['missing_models'])} 个")
+
+            # 显示可用模型
+            if model_status["available_models"]:
+                table = Table(title="✅ 可用模型")
+                table.add_column("模型名称", style="green")
+                table.add_column("状态", style="cyan")
+
+                for model in model_status["available_models"]:
+                    table.add_row(model, "✅ 已安装")
+
+                app.console.print(table)
+
+            # 显示缺失模型和建议
+            if check_missing and model_status["missing_models"]:
+                app.console.print("\n❌ 缺失的配置模型:")
+                for model in model_status["missing_models"]:
+                    app.console.print(f"  • {model}", style="red")
+
+                    # 显示建议
+                    if suggest and model in model_status["suggestions"]:
+                        suggestions = model_status["suggestions"][model]
+                        app.console.print(f"    💡 建议替代: {', '.join(suggestions)}", style="yellow")
+                        app.console.print(f"    📥 下载命令: ollama pull {suggestions[0]}", style="cyan")
+
+            # 显示下载建议
+            if model_status["missing_models"]:
+                app.console.print("\n📥 下载缺失模型:")
+                for model in model_status["missing_models"][:3]:  # 只显示前3个
+                    app.console.print(f"  ollama pull {model}")
+
+                if len(model_status["missing_models"]) > 3:
+                    app.console.print(f"  ... 还有 {len(model_status['missing_models']) - 3} 个模型")
+        else:
+            app.console.print("❌ 系统初始化失败", style="red")
 
     asyncio.run(run())
 
