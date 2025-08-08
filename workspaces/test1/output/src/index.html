@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>泡泡射击游戏</title>
+    <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+    <div class="game-container">
+        <!-- 主菜单 -->
+        <div id="main-menu" class="menu-screen">
+            <h1 class="game-title">🫧 泡泡射击</h1>
+            <div class="menu-buttons">
+                <button class="btn btn-primary" id="start-game">开始游戏</button>
+                <button class="btn btn-secondary" id="settings">设置</button>
+                <button class="btn btn-secondary" id="help">帮助</button>
+            </div>
+            <div class="high-score">
+                <p>最高分: <span id="high-score-value">0</span></p>
+            </div>
+        </div>
+        
+        <!-- 游戏界面 -->
+        <div id="game-screen" class="game-screen hidden">
+            <div class="game-header">
+                <div class="score-info">
+                    <span>分数: <span id="current-score">0</span></span>
+                    <span>关卡: <span id="current-level">1</span></span>
+                </div>
+                <div class="game-controls">
+                    <button class="btn btn-small" id="pause-btn">⏸️</button>
+                    <button class="btn btn-small" id="restart-btn">🔄</button>
+                </div>
+            </div>
+            
+            <canvas id="game-canvas" width="800" height="600"></canvas>
+            
+            <div class="game-footer">
+                <div class="next-bubble">
+                    <span>下一个:</span>
+                    <div id="next-bubble-preview"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 游戏脚本 -->
+    <script src="js/game/Bubble.js"></script>
+    <script src="js/game/Shooter.js"></script>
+    <script src="js/game/BubbleGrid.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
